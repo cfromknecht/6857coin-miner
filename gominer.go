@@ -118,20 +118,11 @@ func (b *BlockHeader) fullHash() []byte {
 	return h.Sum(nil)
 }
 
-func copyHash(src hash.Hash) hash.Hash {
-	typ := reflect.TypeOf(src)
-	val := reflect.ValueOf(src)
-	if typ.Kind() == reflect.Ptr {
-		typ = typ.Elem()
-		val = val.Elem()
-	}
-	elem := reflect.New(typ).Elem()
-	elem.Set(val)
-	return elem.Addr().Interface().(hash.Hash)
-}
+func (b *BlockHeader) suffixHash(buf []byte, h hash.Hash, hh hash.Hash, nonce uint64) uint64 {
+	srcval := reflect.ValueOf(h)
+	dstval := reflect.ValueOf(hh)
+	dstval.Elem().Set(srcval.Elem())
 
-func (b *BlockHeader) suffixHash(buf []byte, h hash.Hash, nonce uint64) uint64 {
-	hh := copyHash(h)
 	binary.BigEndian.PutUint64(buf, nonce)
 	buf[8] = b.Version
 	hh.Write(buf)
@@ -171,8 +162,8 @@ type Collider struct {
 
 func newCollider(h *BlockHeader) *Collider {
 	size := (1 << (h.Difficulty*2/3))
-	if size > (1 << 27) {
-		size = 1 << 27
+	if size > (1 << 28) {
+		size = 1 << 28
 	}
 	log.Println("collider allocating", size)
 	return &Collider{
@@ -210,11 +201,12 @@ func (c *Collider) insert(sum uint64, nonce uint64) (nonces []uint64) {
 func (c *Collider) collideWorker(res chan []uint64, stop chan bool, progress chan uint64, wg *sync.WaitGroup) {
 	defer wg.Done()
 	origH := c.header.prefixHash()
+	tmpH := sha256.New()
 	nonce := uint64(rand.Int63())
 	m := mask(c.header.Difficulty)
 	buf := make([]byte, 128)
 	for i := 0; ; i++ {
-		sum := c.header.suffixHash(buf, origH, nonce) & m
+		sum := c.header.suffixHash(buf, origH, tmpH, nonce) & m
 		nonces := c.insert(sum, nonce)
 		if nonces != nil {
 			log.Println("found sum", sum, "nonces", nonces)
