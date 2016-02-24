@@ -17,7 +17,7 @@ import (
 
 func main() {
 	for {
-		timer := time.NewTimer(20 * time.Second)
+		timer := time.NewTimer(15 * time.Second)
 		mine()
 		select {
 		case <-timer.C:
@@ -26,7 +26,10 @@ func main() {
 }
 
 func mine() error {
-	resp, err := http.Get("http://6857coin.csail.mit.edu:8080/next")
+	client := http.Client {
+		Timeout: time.Second * 5,
+	}
+	resp, err := client.Get("http://6857coin.csail.mit.edu:8080/next")
 	if err != nil {
 		return err
 	}
@@ -49,7 +52,7 @@ func mine() error {
 		return err
 	}
 
-	resp, err = http.Post("http://6857coin.csail.mit.edu:8080/add", "application/json", bytes.NewBuffer(encblk))
+	resp, err = client.Post("http://6857coin.csail.mit.edu:8080/add", "application/json", bytes.NewBuffer(encblk))
 	log.Println(resp, err)
 	return err
 }
@@ -140,7 +143,10 @@ type Collider struct {
 }
 
 func newCollider(h *BlockHeader) *Collider {
-	size := (1 << (h.Difficulty*2/3 + 1))
+	size := (1 << (h.Difficulty*2/3))
+	if size > (1 << 27) {
+		size = 1 << 27
+	}
 	log.Println("collider allocating", size)
 	return &Collider{
 		tableMask: uint64(size - 1),
@@ -194,7 +200,11 @@ func (c *Collider) collideWorker(res chan []uint64, stop chan bool, progress cha
 		nonce++
 
 		if i > 0 && i%1000000 == 0 {
-			progress <- true
+			select {
+			case progress <- true:
+			case <-stop:
+				return
+			}
 		}
 		if i&65535 == 0 {
 			select {
