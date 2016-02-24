@@ -16,7 +16,13 @@ import (
 )
 
 func main() {
-	mine()
+	for {
+		timer := time.NewTimer(20 * time.Second)
+		mine()
+		select {
+		case <-timer.C:
+		}
+	}
 }
 
 func mine() error {
@@ -25,9 +31,9 @@ func mine() error {
 		return err
 	}
 	dec := json.NewDecoder(resp.Body)
-	blk := Block {
+	blk := Block{
 		Header: new(BlockHeader),
-		Block: "dpchen,lopezv,asnoakes",
+		Block:  "dpchen,lopezv,asnoakes",
 	}
 	dec.Decode(blk.Header)
 	blk.Header.Timestamp = uint64(time.Now().UnixNano())
@@ -49,21 +55,21 @@ func mine() error {
 }
 
 func mask(difficulty uint64) uint64 {
-	return (1 << difficulty) - 1;
+	return (1 << difficulty) - 1
 }
 
 type BlockHeader struct {
-	ParentId	string `json:'parentid'`
-	Root	string `json:'root'`
-	Difficulty uint64 `json:'difficulty'`
-	Timestamp uint64 `json:'timestamp'`
-	Nonces []uint64 `json:'nonces'`
-	Version byte `json:'byte'`
+	ParentId   string   `json:'parentid'`
+	Root       string   `json:'root'`
+	Difficulty uint64   `json:'difficulty'`
+	Timestamp  uint64   `json:'timestamp'`
+	Nonces     []uint64 `json:'nonces'`
+	Version    byte     `json:'byte'`
 }
 
 type Block struct {
 	Header *BlockHeader `json:'header'`
-	Block string `json:'block'`
+	Block  string       `json:'block'`
 }
 
 func (b *Block) setRoot() {
@@ -120,62 +126,55 @@ func (b *BlockHeader) doHash(nonce uint64) {
 	log.Println(hex.EncodeToString(h.Sum(nil)))
 }
 
-type BucketEntry struct {
-	nonce uint64
-	sum uint64
+type Entry struct {
+	nonceA uint64
+	nonceB uint64
+	sum    uint64
 }
 
 type Collider struct {
 	tableMask uint64
-	buckets [][]BucketEntry
-	locks []sync.Mutex
-	header *BlockHeader
+	entries   []Entry
+	locks     []sync.Mutex
+	header    *BlockHeader
 }
 
 func newCollider(h *BlockHeader) *Collider {
-	size := (1 << (h.Difficulty * 2 / 3 + 1))
+	size := (1 << (h.Difficulty*2/3 + 1))
 	log.Println("collider allocating", size)
 	return &Collider{
 		tableMask: uint64(size - 1),
-		buckets: make([][]BucketEntry, size),
-		locks: make([]sync.Mutex, 256),
-		header: h,
+		entries:   make([]Entry, size),
+		locks:     make([]sync.Mutex, 256),
+		header:    h,
 	}
 }
 
-func (c *Collider) insert(sum uint64, nonce uint64) (n int) {
+func (c *Collider) insert(sum uint64, nonce uint64) (nonces []uint64) {
 	bucket := sum & c.tableMask
 	lock := sum & 255
 	c.locks[lock].Lock()
-	n = 1
-	for _, v := range c.buckets[bucket] {
-		if v.nonce == nonce {
-			c.locks[lock].Unlock()
-			return
-		}
-		if v.sum == sum {
-			n++
-		}
+	entry := &c.entries[bucket]
+	if entry.nonceA == 0 {
+		entry.nonceA = nonce
+		entry.sum = sum
+		c.locks[lock].Unlock()
+		return
 	}
-	c.buckets[bucket] = append(c.buckets[bucket], BucketEntry{nonce: nonce, sum: sum})
-	c.locks[lock].Unlock()
-	return
-}
-
-func (c *Collider) getAll(sum uint64) (nonces []uint64) {
-	bucket := sum & c.tableMask
-	lock := sum & 255
-	c.locks[lock].Lock()
-	for _, v := range c.buckets[bucket] {
-		if v.sum == sum {
-			nonces = append(nonces, v.nonce)
-		}
+	if entry.sum != sum {
+		c.locks[lock].Unlock()
+		return
+	}
+	if entry.nonceB == 0 {
+		entry.nonceB = nonce
+	} else {
+		nonces = []uint64{entry.nonceA, entry.nonceB, nonce}
 	}
 	c.locks[lock].Unlock()
 	return
 }
 
-func (c *Collider) collideWorker(res chan uint64, stop chan bool, progress chan bool, wg *sync.WaitGroup) {
+func (c *Collider) collideWorker(res chan []uint64, stop chan bool, progress chan bool, wg *sync.WaitGroup) {
 	defer wg.Done()
 	origH := c.header.prefixHash()
 	nonce := uint64(rand.Int63())
@@ -183,20 +182,21 @@ func (c *Collider) collideWorker(res chan uint64, stop chan bool, progress chan 
 	buf := make([]byte, 9)
 	for i := 0; ; i++ {
 		sum := c.header.suffixHash(buf, origH, nonce) & m
-		if c.insert(sum, nonce) >= 3 {
-			log.Println("found sum", sum)
+		nonces := c.insert(sum, nonce)
+		if nonces != nil {
+			log.Println("found sum", sum, "nonces", nonces)
 			select {
-			case res <- sum:
+			case res <- nonces:
 			case <-stop:
 			}
 			return
 		}
 		nonce++
 
-		if i > 0 && i % 1000000 == 0 {
+		if i > 0 && i%1000000 == 0 {
 			progress <- true
 		}
-		if i & 65535 == 0 {
+		if i&65535 == 0 {
 			select {
 			case <-stop:
 				return
@@ -210,7 +210,7 @@ func (c *Collider) collide() (nonces []uint64) {
 	workers := 12
 
 	log.Println("starting workers")
-	res := make(chan uint64)
+	res := make(chan []uint64)
 	progress := make(chan bool)
 	wg := sync.WaitGroup{}
 	defer wg.Wait()
@@ -224,18 +224,14 @@ func (c *Collider) collide() (nonces []uint64) {
 	count := 0
 	for {
 		select {
-		case sum := <-res:
-			nonces = c.getAll(sum)
-			for _, v := range nonces {
-				c.header.doHash(v)
-			}
+		case nonces = <-res:
 			return
 		case <-stop:
 			log.Println("collider stopped")
 			return nil
 		case <-progress:
 			count++
-			log.Println("tried", count * 1000000, "nonces")
+			log.Println("tried", count*1000000, "nonces")
 		}
 	}
 }
