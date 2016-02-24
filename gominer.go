@@ -46,6 +46,7 @@ func mine() error {
 
 	col := newCollider(blk.Header)
 	blk.Header.Nonces = col.collide()
+	log.Println("new hash", hex.EncodeToString(blk.Header.fullHash()))
 
 	encblk, err := json.Marshal(blk)
 	if err != nil {
@@ -89,6 +90,17 @@ func (b *BlockHeader) prefixHash() hash.Hash {
 	binary.Write(h, binary.BigEndian, b.Difficulty)
 	binary.Write(h, binary.BigEndian, b.Timestamp)
 	return h
+}
+
+func (b *BlockHeader) fullHash() []byte {
+	h := b.prefixHash()
+	buf := make([]byte, 25)
+	binary.BigEndian.PutUint64(buf, b.Nonces[0])
+	binary.BigEndian.PutUint64(buf[8:], b.Nonces[1])
+	binary.BigEndian.PutUint64(buf[16:], b.Nonces[2])
+	buf[24] = b.Version
+	h.Write(buf)
+	return h.Sum(nil)
 }
 
 func copyHash(src hash.Hash) hash.Hash {
