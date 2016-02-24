@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"net/http"
 	"reflect"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -18,27 +19,35 @@ import (
 func main() {
 	for {
 		timer := time.NewTimer(15 * time.Second)
-		mine()
+		mine(nil)
 		select {
 		case <-timer.C:
 		}
 	}
 }
 
-func mine() error {
+func mine(parent []byte) []byte {
+	runtime.GC()
+
 	client := http.Client {
 		Timeout: time.Second * 5,
 	}
-	resp, err := client.Get("http://6857coin.csail.mit.edu:8080/next")
-	if err != nil {
-		return err
-	}
-	dec := json.NewDecoder(resp.Body)
 	blk := Block{
 		Header: new(BlockHeader),
 		Block:  "dpchen,lopezv,asnoakes",
 	}
-	dec.Decode(blk.Header)
+	if parent == nil {
+		resp, err := client.Get("http://6857coin.csail.mit.edu:8080/next")
+		if err != nil {
+			log.Println(err)
+			return nil
+		}
+		dec := json.NewDecoder(resp.Body)
+		dec.Decode(blk.Header)
+	} else {
+		blk.Header.ParentId = hex.EncodeToString(parent)
+		blk.Header.Difficulty = 38 // no clue how to do this
+	}
 	blk.Header.Timestamp = uint64(time.Now().UnixNano())
 	blk.setRoot()
 
@@ -46,16 +55,22 @@ func mine() error {
 
 	col := newCollider(blk.Header)
 	blk.Header.Nonces = col.collide()
-	log.Println("new hash", hex.EncodeToString(blk.Header.fullHash()))
 
 	encblk, err := json.Marshal(blk)
 	if err != nil {
-		return err
+		log.Println(err)
+		return nil
 	}
 
-	resp, err = client.Post("http://6857coin.csail.mit.edu:8080/add", "application/json", bytes.NewBuffer(encblk))
-	log.Println(resp, err)
-	return err
+	_, err = client.Post("http://6857coin.csail.mit.edu:8080/add", "application/json", bytes.NewBuffer(encblk))
+	if err != nil {
+		log.Println(err)
+		return nil
+	}
+
+	fullHash := blk.Header.fullHash()
+	log.Println("block committed", hex.EncodeToString(fullHash))
+	return fullHash
 }
 
 func mask(difficulty uint64) uint64 {
@@ -120,7 +135,7 @@ func (b *BlockHeader) suffixHash(buf []byte, h hash.Hash, nonce uint64) uint64 {
 	binary.BigEndian.PutUint64(buf, nonce)
 	buf[8] = b.Version
 	hh.Write(buf)
-	sum := hh.Sum(nil)
+	sum := hh.Sum(buf[:0])
 	return binary.BigEndian.Uint64(sum[len(sum)-8:])
 }
 
@@ -192,12 +207,12 @@ func (c *Collider) insert(sum uint64, nonce uint64) (nonces []uint64) {
 	return
 }
 
-func (c *Collider) collideWorker(res chan []uint64, stop chan bool, progress chan bool, wg *sync.WaitGroup) {
+func (c *Collider) collideWorker(res chan []uint64, stop chan bool, progress chan uint64, wg *sync.WaitGroup) {
 	defer wg.Done()
 	origH := c.header.prefixHash()
 	nonce := uint64(rand.Int63())
 	m := mask(c.header.Difficulty)
-	buf := make([]byte, 9)
+	buf := make([]byte, 128)
 	for i := 0; ; i++ {
 		sum := c.header.suffixHash(buf, origH, nonce) & m
 		nonces := c.insert(sum, nonce)
@@ -211,9 +226,9 @@ func (c *Collider) collideWorker(res chan []uint64, stop chan bool, progress cha
 		}
 		nonce++
 
-		if i > 0 && i%1000000 == 0 {
+		if i > 0 && i%100000 == 0 {
 			select {
-			case progress <- true:
+			case progress <- 100000:
 			case <-stop:
 				return
 			}
@@ -233,7 +248,7 @@ func (c *Collider) collide() (nonces []uint64) {
 
 	log.Println("starting workers")
 	res := make(chan []uint64)
-	progress := make(chan bool)
+	progress := make(chan uint64)
 	wg := sync.WaitGroup{}
 	defer wg.Wait()
 	stop := make(chan bool)
@@ -243,7 +258,7 @@ func (c *Collider) collide() (nonces []uint64) {
 		go c.collideWorker(res, stop, progress, &wg)
 	}
 
-	count := 0
+	count := uint64(0)
 	for {
 		select {
 		case nonces = <-res:
@@ -251,9 +266,11 @@ func (c *Collider) collide() (nonces []uint64) {
 		case <-stop:
 			log.Println("collider stopped")
 			return nil
-		case <-progress:
-			count++
-			log.Println("tried", count*1000000, "nonces")
+		case incr := <-progress:
+			count += incr
+			if count % 1000000 == 0 {
+				log.Println("tried", count, "nonces")
+			}
 		}
 	}
 }
