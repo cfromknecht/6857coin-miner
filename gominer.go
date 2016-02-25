@@ -23,8 +23,9 @@ import (
 )
 
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
-
-const maxTable = 28
+var mainChain = flag.Bool("main", false, "mine the main chain")
+var genesisDifficulty = flag.Int("difficulty", 42, "difficulty for mining genesis block")
+var maxTable = flag.Int("table", 28, "log base 2 of maximum table size")
 
 func main() {
 	flag.Parse()
@@ -37,11 +38,17 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 
+	var parent []byte
+	if !*mainChain {
+		parent, _ = hex.DecodeString("169740d5c4711f3cbbde6b9bfbbe8b3d236879d849d1c137660fce9e7884cae7")
+	}
 	for {
 		timer := time.NewTimer(15 * time.Second)
-		//parent, _ := hex.DecodeString("169740d5c4711f3cbbde6b9bfbbe8b3d236879d849d1c137660fce9e7884cae7")
-		//mine(parent)
-		mine(nil)
+		if *mainChain {
+			mine(nil)
+		} else {
+			parent = mine(parent)
+		}
 
 		select {
 		case <-timer.C:
@@ -70,7 +77,7 @@ func mine(parent []byte) []byte {
 		resp.Body.Close()
 	} else {
 		blk.Header.ParentId = hex.EncodeToString(parent)
-		blk.Header.Difficulty = 32 // no clue how to do this
+		blk.Header.Difficulty = uint64(*genesisDifficulty)
 	}
 	blk.Header.Timestamp = uint64(time.Now().Add(2 * time.Minute).UnixNano())
 	blk.setRoot()
@@ -178,14 +185,15 @@ type Collider struct {
 
 func newCollider(h *BlockHeader) *Collider {
 	size := (1 << (h.Difficulty * 2 / 3))
-	if size > (1 << maxTable) {
-		size = 1 << maxTable
+	maxSize := 1 << uint64(*maxTable)
+	if size > maxSize {
+		size = maxSize
 	}
 	log.Println("table size", size)
 	return &Collider{
 		tableMask: uint64(size - 1),
 		entries:   make([]C.struct_entry, size),
-		locks:     make([]C.mutex, 256),
+		locks:     make([]C.mutex, 65536),
 		header:    h,
 	}
 }
@@ -235,7 +243,7 @@ func (c *Collider) collideWorker(res chan []uint64, stop chan bool, progress cha
 }
 
 func (c *Collider) collide() (nonces []uint64) {
-	workers := 12
+	workers := runtime.NumCPU() * 2
 
 	res := make(chan []uint64)
 	progress := make(chan uint64)

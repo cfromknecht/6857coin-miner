@@ -19,7 +19,7 @@ int insert(entry *entries, mutex *locks, int entry_mask,
     uint64_t sum, uint64_t nonce, uint64_t *result) {
   int ret = 0;
 
-  uint8_t lockidx = sum & 255;
+  int lockidx = sum & 65535;
   lock(&locks[lockidx]);
 
   int bucket = sum & entry_mask;
