@@ -11,13 +11,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"flag"
-	"hash"
 	"io/ioutil"
 	"log"
 	"math/rand"
 	"net/http"
 	"os"
-	"reflect"
 	"runtime"
 	"runtime/pprof"
 	"sync"
@@ -137,17 +135,6 @@ func (b *Block) setRoot() {
 }
 
 func (b *BlockHeader) fullHash() []byte {
-	h := b.prefixHash()
-	buf := make([]byte, 25)
-	binary.BigEndian.PutUint64(buf, b.Nonces[0])
-	binary.BigEndian.PutUint64(buf[8:], b.Nonces[1])
-	binary.BigEndian.PutUint64(buf[16:], b.Nonces[2])
-	buf[24] = b.Version
-	h.Write(buf)
-	return h.Sum(nil)
-}
-
-func (b *BlockHeader) prefixHash() hash.Hash {
 	h := sha256.New()
 	parentId, _ := hex.DecodeString(b.ParentId)
 	h.Write(parentId)
@@ -155,19 +142,11 @@ func (b *BlockHeader) prefixHash() hash.Hash {
 	h.Write(root)
 	binary.Write(h, binary.BigEndian, b.Difficulty)
 	binary.Write(h, binary.BigEndian, b.Timestamp)
-	return h
-}
-
-func (b *BlockHeader) suffixHash(buf []byte, h hash.Hash, hh hash.Hash, nonce uint64) uint64 {
-	srcval := reflect.ValueOf(h)
-	dstval := reflect.ValueOf(hh)
-	dstval.Elem().Set(srcval.Elem())
-
-	binary.BigEndian.PutUint64(buf, nonce)
-	buf[8] = b.Version
-	hh.Write(buf[0:9])
-	sum := hh.Sum(buf[:0])
-	return binary.BigEndian.Uint64(sum[len(sum)-8:])
+	for _, v := range b.Nonces {
+		binary.Write(h, binary.BigEndian, v)
+	}
+	h.Write([]byte{b.Version})
+	return h.Sum(nil)
 }
 
 func (b *BlockHeader) getHashBytes() []byte {
@@ -182,25 +161,6 @@ func (b *BlockHeader) getHashBytes() []byte {
 	buf.WriteByte(b.Version)
 
 	return buf.Bytes()
-}
-
-func (b *BlockHeader) doHash(nonce uint64) []byte {
-	h := sha256.New()
-	parentId, _ := hex.DecodeString(b.ParentId)
-	h.Write(parentId)
-	root, _ := hex.DecodeString(b.Root)
-	h.Write(root)
-	binary.Write(h, binary.BigEndian, b.Difficulty)
-	binary.Write(h, binary.BigEndian, b.Timestamp)
-
-	buf := make([]byte, 9)
-	binary.BigEndian.PutUint64(buf, nonce)
-	buf[8] = b.Version
-	h.Write(buf)
-
-	s := h.Sum(nil)
-	log.Println(hex.EncodeToString(s))
-	return s
 }
 
 type Entry struct {
@@ -232,7 +192,7 @@ func newCollider(h *BlockHeader) *Collider {
 
 func (c *Collider) collideWorker(res chan []uint64, stop chan bool, progress chan uint64, wg *sync.WaitGroup) {
 	defer wg.Done()
-	iters := 1000000
+	iters := 10000
 	header := c.header.getHashBytes()
 	headerCopy := make([]C.uint8_t, len(header))
 	for i := range header {
@@ -254,7 +214,6 @@ func (c *Collider) collideWorker(res chan []uint64, stop chan bool, progress cha
 			for i := range result {
 				nonces[i] = uint64(result[i])
 			}
-			log.Println("found nonces", nonces)
 			select {
 			case res <- nonces:
 			case <-stop:
@@ -291,12 +250,12 @@ func (c *Collider) collide() (nonces []uint64) {
 
 	count := uint64(0)
 	now := time.Now()
+	start := now
 	for {
 		select {
 		case nonces = <-res:
-			for _, v := range nonces {
-				c.header.doHash(v)
-			}
+			log.Println("found nonces", nonces)
+			log.Printf("%d nonces, %.6f seconds\n", count, time.Now().Sub(start).Seconds())
 			return
 		case <-stop:
 			return nil
@@ -307,8 +266,8 @@ func (c *Collider) collide() (nonces []uint64) {
 				prev := now
 				now = time.Now()
 				delta := now.Sub(prev)
-				log.Printf("%d million nonces, %.6f million hashes/sec",
-					count / 1000000, float64(mod) / 1000000 / delta.Seconds())
+				log.Printf("%d nonces, %.6f million hashes/sec",
+					count, float64(mod) / 1000000 / delta.Seconds())
 			}
 		}
 	}
