@@ -26,6 +26,7 @@ var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 var mainChain = flag.Bool("main", false, "mine the main chain")
 var genesisDifficulty = flag.Int("difficulty", 42, "difficulty for mining genesis block")
 var maxTable = flag.Int("table", 28, "log base 2 of maximum table size")
+var timeOffset = flag.Int("offset", 2, "number of minutes to set timestamp forward by")
 
 func main() {
 	flag.Parse()
@@ -80,7 +81,7 @@ func mine(parent []byte, col **Collider) []byte {
 		blk.Header.ParentId = hex.EncodeToString(parent)
 		blk.Header.Difficulty = uint64(*genesisDifficulty)
 	}
-	blk.Header.Timestamp = uint64(time.Now().Add(2 * time.Minute).UnixNano())
+	blk.Header.Timestamp = uint64(time.Now().Add(time.Duration(*timeOffset) * time.Minute).UnixNano())
 	blk.setRoot()
 
 	log.Println("parent ID", blk.Header.ParentId)
