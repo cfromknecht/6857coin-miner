@@ -42,12 +42,13 @@ func main() {
 	if !*mainChain {
 		parent, _ = hex.DecodeString("169740d5c4711f3cbbde6b9bfbbe8b3d236879d849d1c137660fce9e7884cae7")
 	}
+	var col *Collider
 	for {
 		timer := time.NewTimer(15 * time.Second)
 		if *mainChain {
-			mine(nil)
+			mine(nil, &col)
 		} else {
-			parent = mine(parent)
+			parent = mine(parent, &col)
 		}
 
 		select {
@@ -56,7 +57,7 @@ func main() {
 	}
 }
 
-func mine(parent []byte) []byte {
+func mine(parent []byte, col **Collider) []byte {
 	runtime.GC()
 
 	client := http.Client{
@@ -84,8 +85,8 @@ func mine(parent []byte) []byte {
 
 	log.Println("parent ID", blk.Header.ParentId)
 
-	col := newCollider(blk.Header)
-	blk.Header.Nonces = col.collide()
+	*col = reuseCollider(blk.Header, *col)
+	blk.Header.Nonces = (*col).collide()
 
 	encblk, err := json.Marshal(blk)
 	if err != nil {
@@ -198,6 +199,25 @@ func newCollider(h *BlockHeader) *Collider {
 		locks:     make([]C.mutex, 65536),
 		header:    h,
 	}
+}
+
+func reuseCollider(h *BlockHeader, c *Collider) *Collider {
+	if c == nil || h.Difficulty != c.header.Difficulty {
+		// make sure memory is freed...
+		if c != nil {
+			c.table1 = nil
+			c.table2 = nil
+		}
+		return newCollider(h)
+	}
+	c.header = h
+	for i := range c.table1 {
+		c.table1[i] = C.struct_table1_entry{}
+	}
+	for i := range c.table2 {
+		c.table2[i] = C.struct_table2_entry{}
+	}
+	return c
 }
 
 func (c *Collider) collideWorker(res chan []uint64, stop chan bool, progress chan uint64, wg *sync.WaitGroup) {
