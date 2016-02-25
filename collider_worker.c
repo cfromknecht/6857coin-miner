@@ -23,7 +23,7 @@ uint64_t insertL1(table1_entry *table1, int log_table1_size, mutex *locks, int
   int lockidx = sum & 65535;
   lock(&locks[lockidx]);
 
-  int bucket = sum & ((1UL << log_table1_size) - 1);
+  int bucket = sum & ((1ULL << log_table1_size) - 1);
   table1_entry *e = &table1[bucket];
 
   int partial = sum >> log_table1_size;
@@ -52,7 +52,7 @@ uint64_t insertL2(table2_entry *table2, int log_table2_size, mutex *locks,
   int lockidx = sum & 65535;
   lock(&locks[lockidx]);
 
-  int bucket = sum & ((1UL << log_table2_size) - 1);
+  int bucket = sum & ((1ULL << log_table2_size) - 1);
   table2_entry *e = &table2[bucket];
 
   if (!e->nonceB) {
@@ -101,7 +101,7 @@ int find_collisions(table1_entry *table1, int log_table1_size, table2_entry
 
     for (int j = 0; j < SHA256_VEC_SIZE; j++) {
       uint64_t sum = ((uint64_t) s.state[6][j] << 32) | s.state[7][j];
-      sum &= (1UL << difficulty) - 1;
+      sum &= (1ULL << difficulty) - 1;
       if (result[0] = insertL1(table1, log_table1_size, locks, difficulty, sum, nonce+j)) {
         if (result[1] = insertL2(table2, log_table2_size, locks, sum, nonce+j)) {
           result[2] = nonce+j;
