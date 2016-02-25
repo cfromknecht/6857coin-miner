@@ -204,34 +204,16 @@ func newCollider(h *BlockHeader) *Collider {
 func reuseCollider(h *BlockHeader, c *Collider) *Collider {
 	if c == nil || h.Difficulty != c.header.Difficulty {
 		// make sure memory is freed...
-		log.Println("creating new collider")
 		if c != nil {
 			c.table1 = nil
 			c.table2 = nil
 		}
 		return newCollider(h)
 	}
-	log.Println("reusing collider")
-
 	c.header = h
-	var wg sync.WaitGroup
-	chunkSize := 1 << 20
-	// zero out table1 in parallel
-	for start := 0; start < len(c.table1); start += chunkSize {
-		end := start + chunkSize
-		if end > len(c.table1) {
-			end = len(c.table1)
-		}
-		wg.Add(1)
-		go func(start, end int) {
-			for i := start; i < end; i++ {
-				c.table1[i] = C.struct_table1_entry{}
-			}
-			wg.Done()
-		}(start, end)
+	for i := range c.table1 {
+		c.table1[i] = C.struct_table1_entry{}
 	}
-	wg.Wait()
-
 	for i := range c.table2 {
 		c.table2[i] = C.struct_table2_entry{}
 	}
