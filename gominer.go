@@ -6,19 +6,38 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"flag"
 	"hash"
+	"io/ioutil"
 	"log"
 	"math/rand"
 	"net/http"
+	"os"
 	"reflect"
 	"runtime"
+	"runtime/pprof"
 	"sync"
 	"time"
 )
 
+var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
+const maxTable = 28
+
 func main() {
+	flag.Parse()
+	if *cpuprofile != "" {
+		f, err := os.Create(*cpuprofile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
+	}
+
 	for {
 		timer := time.NewTimer(15 * time.Second)
+		//parent, _ := hex.DecodeString("169740d5c4711f3cbbde6b9bfbbe8b3d236879d849d1c137660fce9e7884cae7")
+		//mine(parent)
 		mine(nil)
 		select {
 		case <-timer.C:
@@ -44,11 +63,12 @@ func mine(parent []byte) []byte {
 		}
 		dec := json.NewDecoder(resp.Body)
 		dec.Decode(blk.Header)
+		resp.Body.Close()
 	} else {
 		blk.Header.ParentId = hex.EncodeToString(parent)
-		blk.Header.Difficulty = 38 // no clue how to do this
+		blk.Header.Difficulty = 32 // no clue how to do this
 	}
-	blk.Header.Timestamp = uint64(time.Now().UnixNano())
+	blk.Header.Timestamp = uint64(time.Now().Add(2*time.Minute).UnixNano())
 	blk.setRoot()
 
 	log.Println(blk.Header)
@@ -62,15 +82,29 @@ func mine(parent []byte) []byte {
 		return nil
 	}
 
-	_, err = client.Post("http://6857coin.csail.mit.edu:8080/add", "application/json", bytes.NewBuffer(encblk))
+	resp, err := client.Post("http://6857coin.csail.mit.edu:8080/add", "application/json", bytes.NewBuffer(encblk))
 	if err != nil {
 		log.Println(err)
+		return nil
+	}
+	err = printResponse(resp)
+	if err != nil {
 		return nil
 	}
 
 	fullHash := blk.Header.fullHash()
 	log.Println("block committed", hex.EncodeToString(fullHash))
 	return fullHash
+}
+
+func printResponse(resp *http.Response) error {
+	defer resp.Body.Close()
+	contents, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	log.Println(string(contents))
+	return nil
 }
 
 func mask(difficulty uint64) uint64 {
@@ -96,17 +130,6 @@ func (b *Block) setRoot() {
 	b.Header.Root = hex.EncodeToString(sum[:])
 }
 
-func (b *BlockHeader) prefixHash() hash.Hash {
-	h := sha256.New()
-	parentId, _ := hex.DecodeString(b.ParentId)
-	h.Write(parentId)
-	root, _ := hex.DecodeString(b.Root)
-	h.Write(root)
-	binary.Write(h, binary.BigEndian, b.Difficulty)
-	binary.Write(h, binary.BigEndian, b.Timestamp)
-	return h
-}
-
 func (b *BlockHeader) fullHash() []byte {
 	h := b.prefixHash()
 	buf := make([]byte, 25)
@@ -118,6 +141,17 @@ func (b *BlockHeader) fullHash() []byte {
 	return h.Sum(nil)
 }
 
+func (b *BlockHeader) prefixHash() hash.Hash {
+	h := sha256.New()
+	parentId, _ := hex.DecodeString(b.ParentId)
+	h.Write(parentId)
+	root, _ := hex.DecodeString(b.Root)
+	h.Write(root)
+	binary.Write(h, binary.BigEndian, b.Difficulty)
+	binary.Write(h, binary.BigEndian, b.Timestamp)
+	return h
+}
+
 func (b *BlockHeader) suffixHash(buf []byte, h hash.Hash, hh hash.Hash, nonce uint64) uint64 {
 	srcval := reflect.ValueOf(h)
 	dstval := reflect.ValueOf(hh)
@@ -125,12 +159,12 @@ func (b *BlockHeader) suffixHash(buf []byte, h hash.Hash, hh hash.Hash, nonce ui
 
 	binary.BigEndian.PutUint64(buf, nonce)
 	buf[8] = b.Version
-	hh.Write(buf)
+	hh.Write(buf[0:9])
 	sum := hh.Sum(buf[:0])
 	return binary.BigEndian.Uint64(sum[len(sum)-8:])
 }
 
-func (b *BlockHeader) doHash(nonce uint64) {
+func (b *BlockHeader) doHash(nonce uint64) []byte {
 	h := sha256.New()
 	parentId, _ := hex.DecodeString(b.ParentId)
 	h.Write(parentId)
@@ -144,7 +178,9 @@ func (b *BlockHeader) doHash(nonce uint64) {
 	buf[8] = b.Version
 	h.Write(buf)
 
-	log.Println(hex.EncodeToString(h.Sum(nil)))
+	s := h.Sum(nil)
+	log.Println(hex.EncodeToString(s))
+	return s
 }
 
 type Entry struct {
@@ -162,8 +198,8 @@ type Collider struct {
 
 func newCollider(h *BlockHeader) *Collider {
 	size := (1 << (h.Difficulty*2/3))
-	if size > (1 << 28) {
-		size = 1 << 28
+	if size > (1 << maxTable) {
+		size = 1 << maxTable
 	}
 	log.Println("collider allocating", size)
 	return &Collider{
@@ -254,13 +290,16 @@ func (c *Collider) collide() (nonces []uint64) {
 	for {
 		select {
 		case nonces = <-res:
+			for _, v := range nonces {
+				c.header.doHash(v)
+			}
 			return
 		case <-stop:
 			log.Println("collider stopped")
 			return nil
 		case incr := <-progress:
 			count += incr
-			if count % 1000000 == 0 {
+			if count % 10000000 == 0 {
 				log.Println("tried", count, "nonces")
 			}
 		}
