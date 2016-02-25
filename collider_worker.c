@@ -15,44 +15,65 @@ static void unlock(mutex *m) {
   __sync_lock_release(m);
 }
 
-int insert(entry *entries, mutex *locks, int entry_mask,
-    uint64_t sum, uint64_t nonce, uint64_t *result) {
-  int ret = 0;
+uint64_t insertL1(table1_entry *table1, int log_table1_size, mutex *locks, int
+    difficulty, uint64_t sum, uint64_t nonce) {
+
+  uint64_t ret = 0;
 
   int lockidx = sum & 65535;
   lock(&locks[lockidx]);
 
-  int bucket = sum & entry_mask;
-  entry *entry = &entries[bucket];
+  int bucket = sum & ((1UL << log_table1_size) - 1);
+  table1_entry *e = &table1[bucket];
 
-  if (!entry->nonceA) {
-    entry->nonceA = nonce;
-    entry->sum = sum;
+  int partial = sum >> log_table1_size;
+
+  if (!e->nonceA) {
+    e->nonceA = nonce;
+    e->partial = partial;
     goto cleanup;
   }
 
-  if (entry->sum != sum)
+  if (e->partial != partial)
     goto cleanup;
 
-  if (!entry->nonceB) {
-    entry->nonceB = nonce;
-    goto cleanup;
-  }
-
-  result[0] = entry->nonceA;
-  result[1] = entry->nonceB;
-  result[2] = nonce;
-  ret = 1;
+  ret = e->nonceA;
 
 cleanup:
   unlock(&locks[lockidx]);
   return ret;
 }
 
-int find_collisions(entry *entries, mutex *locks, uint64_t entry_mask,
-                     uint64_t difficulty_mask, uint64_t nonce,
-                     uint8_t *header, int iters, uint64_t *result) {
-  int orig_nonce = nonce % 256;
+uint64_t insertL2(table2_entry *table2, int log_table2_size, mutex *locks,
+    uint64_t sum, uint64_t nonce) {
+
+  uint64_t ret = 0;
+
+  int lockidx = sum & 65535;
+  lock(&locks[lockidx]);
+
+  int bucket = sum & ((1UL << log_table2_size) - 1);
+  table2_entry *e = &table2[bucket];
+
+  if (!e->nonceB) {
+    e->nonceB = nonce;
+    e->sum = sum;
+    goto cleanup;
+  }
+
+  if (e->sum != sum)
+    goto cleanup;
+
+  ret = e->nonceB;
+
+cleanup:
+  unlock(&locks[lockidx]);
+  return ret;
+}
+
+int find_collisions(table1_entry *table1, int log_table1_size, table2_entry
+		*table2, int log_table2_size, mutex *locks, int difficulty,
+		uint64_t nonce, uint8_t *header, int iters, uint64_t *result) {
   sha256_word buf[32]; // 128 bytes
   sha256_preprocess(header, 89, buf);
 
@@ -80,9 +101,12 @@ int find_collisions(entry *entries, mutex *locks, uint64_t entry_mask,
 
     for (int j = 0; j < SHA256_VEC_SIZE; j++) {
       uint64_t sum = ((uint64_t) s.state[6][j] << 32) | s.state[7][j];
-      sum &= difficulty_mask;
-      if (insert(entries, locks, entry_mask, sum, nonce+j, result)) {
-        return 1;
+      sum &= (1UL << difficulty) - 1;
+      if (result[0] = insertL1(table1, log_table1_size, locks, difficulty, sum, nonce+j)) {
+        if (result[1] = insertL2(table2, log_table2_size, locks, sum, nonce+j)) {
+          result[2] = nonce+j;
+          return 1;
+        }
       }
     }
 

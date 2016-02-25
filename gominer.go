@@ -170,29 +170,31 @@ func (b *BlockHeader) getHashBytes() []byte {
 	return buf.Bytes()
 }
 
-type Entry struct {
-	nonceA uint64
-	nonceB uint64
-	sum    uint64
-}
-
 type Collider struct {
-	tableMask uint64
-	entries   []C.struct_entry
+	logTable1Size uint
+	table1   []C.struct_table1_entry
+	logTable2Size uint
+	table2 []C.struct_table2_entry
 	locks     []C.mutex
 	header    *BlockHeader
 }
 
 func newCollider(h *BlockHeader) *Collider {
-	size := (1 << (h.Difficulty * 2 / 3))
-	maxSize := 1 << uint64(*maxTable)
-	if size > maxSize {
-		size = maxSize
+	logTable1Size := uint(h.Difficulty * 2 / 3)
+	if logTable1Size > uint(*maxTable) {
+		logTable1Size = uint(*maxTable)
 	}
-	log.Println("table size", size)
+	size1 := 1 << logTable1Size
+	log.Println("table1 size", size1)
+
+	logTable2Size := uint(20)
+	size2 := 1 << logTable2Size
+
 	return &Collider{
-		tableMask: uint64(size - 1),
-		entries:   make([]C.struct_entry, size),
+		logTable1Size: logTable1Size,
+		table1:   make([]C.struct_table1_entry, size1),
+		logTable2Size: logTable2Size,
+		table2:   make([]C.struct_table2_entry, size2),
 		locks:     make([]C.mutex, 65536),
 		header:    h,
 	}
@@ -209,9 +211,10 @@ func (c *Collider) collideWorker(res chan []uint64, stop chan bool, progress cha
 	result := make([]C.uint64_t, 3)
 
 	for {
-		found := C.find_collisions(&c.entries[0], &c.locks[0],
-			C.uint64_t(c.tableMask),
-			C.uint64_t(mask(c.header.Difficulty)),
+		found := C.find_collisions(&c.table1[0], C.int(c.logTable1Size),
+			&c.table2[0], C.int(c.logTable2Size),
+			&c.locks[0],
+			C.int(c.header.Difficulty),
 			C.uint64_t(rand.Int63()),
 			&headerCopy[0],
 			C.int(iters),
