@@ -1,5 +1,9 @@
 package main
 
+// #cgo CFLAGS: -O3 -march=native -g -g3
+// #include "collider_worker.h"
+import "C"
+
 import (
 	"bytes"
 	"crypto/sha256"
@@ -21,6 +25,7 @@ import (
 )
 
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
+
 const maxTable = 28
 
 func main() {
@@ -39,6 +44,7 @@ func main() {
 		//parent, _ := hex.DecodeString("169740d5c4711f3cbbde6b9bfbbe8b3d236879d849d1c137660fce9e7884cae7")
 		//mine(parent)
 		mine(nil)
+
 		select {
 		case <-timer.C:
 		}
@@ -48,7 +54,7 @@ func main() {
 func mine(parent []byte) []byte {
 	runtime.GC()
 
-	client := http.Client {
+	client := http.Client{
 		Timeout: time.Second * 5,
 	}
 	blk := Block{
@@ -68,10 +74,10 @@ func mine(parent []byte) []byte {
 		blk.Header.ParentId = hex.EncodeToString(parent)
 		blk.Header.Difficulty = 32 // no clue how to do this
 	}
-	blk.Header.Timestamp = uint64(time.Now().Add(2*time.Minute).UnixNano())
+	blk.Header.Timestamp = uint64(time.Now().Add(2 * time.Minute).UnixNano())
 	blk.setRoot()
 
-	log.Println(blk.Header)
+	log.Println("parent ID", blk.Header.ParentId)
 
 	col := newCollider(blk.Header)
 	blk.Header.Nonces = col.collide()
@@ -103,7 +109,7 @@ func printResponse(resp *http.Response) error {
 	if err != nil {
 		return err
 	}
-	log.Println(string(contents))
+	log.Println("response", string(contents))
 	return nil
 }
 
@@ -164,6 +170,20 @@ func (b *BlockHeader) suffixHash(buf []byte, h hash.Hash, hh hash.Hash, nonce ui
 	return binary.BigEndian.Uint64(sum[len(sum)-8:])
 }
 
+func (b *BlockHeader) getHashBytes() []byte {
+	buf := &bytes.Buffer{}
+	parentId, _ := hex.DecodeString(b.ParentId)
+	buf.Write(parentId)
+	root, _ := hex.DecodeString(b.Root)
+	buf.Write(root)
+	binary.Write(buf, binary.BigEndian, b.Difficulty)
+	binary.Write(buf, binary.BigEndian, b.Timestamp)
+	binary.Write(buf, binary.BigEndian, uint64(0)) // nonce
+	buf.WriteByte(b.Version)
+
+	return buf.Bytes()
+}
+
 func (b *BlockHeader) doHash(nonce uint64) []byte {
 	h := sha256.New()
 	parentId, _ := hex.DecodeString(b.ParentId)
@@ -191,82 +211,66 @@ type Entry struct {
 
 type Collider struct {
 	tableMask uint64
-	entries   []Entry
-	locks     []sync.Mutex
+	entries   []C.struct_entry
+	locks     []C.mutex
 	header    *BlockHeader
 }
 
 func newCollider(h *BlockHeader) *Collider {
-	size := (1 << (h.Difficulty*2/3))
+	size := (1 << (h.Difficulty * 2 / 3))
 	if size > (1 << maxTable) {
 		size = 1 << maxTable
 	}
-	log.Println("collider allocating", size)
+	log.Println("table size", size)
 	return &Collider{
 		tableMask: uint64(size - 1),
-		entries:   make([]Entry, size),
-		locks:     make([]sync.Mutex, 256),
+		entries:   make([]C.struct_entry, size),
+		locks:     make([]C.mutex, 256),
 		header:    h,
 	}
 }
 
-func (c *Collider) insert(sum uint64, nonce uint64) (nonces []uint64) {
-	bucket := sum & c.tableMask
-	lock := sum & 255
-	c.locks[lock].Lock()
-	entry := &c.entries[bucket]
-	if entry.nonceA == 0 {
-		entry.nonceA = nonce
-		entry.sum = sum
-		c.locks[lock].Unlock()
-		return
-	}
-	if entry.sum != sum {
-		c.locks[lock].Unlock()
-		return
-	}
-	if entry.nonceB == 0 {
-		entry.nonceB = nonce
-	} else {
-		nonces = []uint64{entry.nonceA, entry.nonceB, nonce}
-	}
-	c.locks[lock].Unlock()
-	return
-}
-
 func (c *Collider) collideWorker(res chan []uint64, stop chan bool, progress chan uint64, wg *sync.WaitGroup) {
 	defer wg.Done()
-	origH := c.header.prefixHash()
-	tmpH := sha256.New()
-	nonce := uint64(rand.Int63())
-	m := mask(c.header.Difficulty)
-	buf := make([]byte, 128)
-	for i := 0; ; i++ {
-		sum := c.header.suffixHash(buf, origH, tmpH, nonce) & m
-		nonces := c.insert(sum, nonce)
-		if nonces != nil {
-			log.Println("found sum", sum, "nonces", nonces)
+	iters := 1000000
+	header := c.header.getHashBytes()
+	headerCopy := make([]C.uint8_t, len(header))
+	for i := range header {
+		headerCopy[i] = C.uint8_t(header[i])
+	}
+	result := make([]C.uint64_t, 3)
+
+	for {
+		found := C.find_collisions(&c.entries[0], &c.locks[0],
+			C.uint64_t(c.tableMask),
+			C.uint64_t(mask(c.header.Difficulty)),
+			C.uint64_t(rand.Int63()),
+			&headerCopy[0],
+			C.int(iters),
+			&result[0])
+
+		if found != 0 {
+			nonces := make([]uint64, 3)
+			for i := range result {
+				nonces[i] = uint64(result[i])
+			}
+			log.Println("found nonces", nonces)
 			select {
 			case res <- nonces:
 			case <-stop:
 			}
 			return
 		}
-		nonce++
 
-		if i > 0 && i%100000 == 0 {
-			select {
-			case progress <- 100000:
-			case <-stop:
-				return
-			}
+		select {
+		case progress <- uint64(iters):
+		case <-stop:
+			return
 		}
-		if i&65535 == 0 {
-			select {
-			case <-stop:
-				return
-			default:
-			}
+		select {
+		case <-stop:
+			return
+		default:
 		}
 	}
 }
@@ -274,7 +278,6 @@ func (c *Collider) collideWorker(res chan []uint64, stop chan bool, progress cha
 func (c *Collider) collide() (nonces []uint64) {
 	workers := 12
 
-	log.Println("starting workers")
 	res := make(chan []uint64)
 	progress := make(chan uint64)
 	wg := sync.WaitGroup{}
@@ -287,6 +290,7 @@ func (c *Collider) collide() (nonces []uint64) {
 	}
 
 	count := uint64(0)
+	now := time.Now()
 	for {
 		select {
 		case nonces = <-res:
@@ -295,12 +299,16 @@ func (c *Collider) collide() (nonces []uint64) {
 			}
 			return
 		case <-stop:
-			log.Println("collider stopped")
 			return nil
 		case incr := <-progress:
 			count += incr
-			if count % 10000000 == 0 {
-				log.Println("tried", count, "nonces")
+			mod := uint64(100000000)
+			if count%mod == 0 {
+				prev := now
+				now = time.Now()
+				delta := now.Sub(prev)
+				log.Printf("%d million nonces, %.6f million hashes/sec",
+					count / 1000000, float64(mod) / 1000000 / delta.Seconds())
 			}
 		}
 	}
