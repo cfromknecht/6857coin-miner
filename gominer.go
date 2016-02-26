@@ -27,6 +27,7 @@ var mainChain = flag.Bool("main", false, "mine the main chain")
 var genesisDifficulty = flag.Int("difficulty", 42, "difficulty for mining genesis block")
 var maxTable = flag.Int("table", 28, "log base 2 of maximum table size")
 var timeOffset = flag.Int("offset", 2, "number of minutes to set timestamp forward by")
+var delay = flag.Int("delay", 15, "number of seconds to wait between blocks")
 
 func main() {
 	flag.Parse()
@@ -45,7 +46,7 @@ func main() {
 	}
 	var col *Collider
 	for {
-		timer := time.NewTimer(15 * time.Second)
+		timer := time.NewTimer(time.Duration(*delay) * time.Second)
 		if *mainChain {
 			mine(nil, &col)
 		} else {
