@@ -28,6 +28,7 @@ var genesisDifficulty = flag.Int("difficulty", 42, "difficulty for mining genesi
 var maxTable = flag.Int("table", 28, "log base 2 of maximum table size")
 var timeOffset = flag.Int("offset", 2, "number of minutes to set timestamp forward by")
 var delay = flag.Int("delay", 15, "number of seconds to wait between blocks")
+var maxMine = flag.Int("max", 1 << 31, "maximum number of blocks to mine before quitting")
 
 func main() {
 	flag.Parse()
@@ -45,7 +46,7 @@ func main() {
 		parent, _ = hex.DecodeString("169740d5c4711f3cbbde6b9bfbbe8b3d236879d849d1c137660fce9e7884cae7")
 	}
 	var col *Collider
-	for {
+	for i := 0; i < *maxMine; i++ {
 		timer := time.NewTimer(time.Duration(*delay) * time.Second)
 		if *mainChain {
 			mine(nil, &col)
