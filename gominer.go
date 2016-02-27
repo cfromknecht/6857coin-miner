@@ -1,6 +1,7 @@
 package main
 
 // #cgo CFLAGS: -O3 -march=native -g -g3
+// #include <stdlib.h>
 // #include "collider_worker.h"
 import "C"
 
@@ -20,6 +21,7 @@ import (
 	"runtime/pprof"
 	"sync"
 	"time"
+	"unsafe"
 )
 
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
@@ -28,7 +30,7 @@ var genesisDifficulty = flag.Int("difficulty", 42, "difficulty for mining genesi
 var maxTable = flag.Int("table", 28, "log base 2 of maximum table size")
 var timeOffset = flag.Int("offset", 2, "number of minutes to set timestamp forward by")
 var delay = flag.Int("delay", 15, "number of seconds to wait between blocks")
-var maxMine = flag.Int("max", 1 << 31, "maximum number of blocks to mine before quitting")
+var maxMine = flag.Int("max", 1<<31, "maximum number of blocks to mine before quitting")
 
 func main() {
 	flag.Parse()
@@ -88,6 +90,7 @@ func mine(parent []byte) []byte {
 	log.Println("parent ID", blk.Header.ParentId)
 
 	col := newCollider(blk.Header)
+	defer col.cleanup()
 	blk.Header.Nonces = col.collide()
 
 	encblk, err := json.Marshal(blk)
@@ -175,11 +178,11 @@ func (b *BlockHeader) getHashBytes() []byte {
 
 type Collider struct {
 	logTable1Size uint
-	table1   []C.struct_table1_entry
+	table1        *C.struct_table1_entry
 	logTable2Size uint
-	table2 []C.struct_table2_entry
-	locks     []C.mutex
-	header    *BlockHeader
+	table2        *C.struct_table2_entry
+	locks         []C.mutex
+	header        *BlockHeader
 }
 
 func newCollider(h *BlockHeader) *Collider {
@@ -189,18 +192,27 @@ func newCollider(h *BlockHeader) *Collider {
 	}
 	size1 := 1 << logTable1Size
 	log.Println("table1 size", size1)
+	ptr1 := C.calloc(C.size_t(size1), C.sizeof_struct_table1_entry)
 
 	logTable2Size := uint(20)
 	size2 := 1 << logTable2Size
+	ptr2 := C.calloc(C.size_t(size2), C.sizeof_struct_table2_entry)
 
 	return &Collider{
 		logTable1Size: logTable1Size,
-		table1:   make([]C.struct_table1_entry, size1),
+		table1:        (*C.struct_table1_entry)(ptr1),
 		logTable2Size: logTable2Size,
-		table2:   make([]C.struct_table2_entry, size2),
-		locks:     make([]C.mutex, 65536),
-		header:    h,
+		table2:        (*C.struct_table2_entry)(ptr2),
+		locks:         make([]C.mutex, 65536),
+		header:        h,
 	}
+}
+
+func (c *Collider) cleanup() {
+	C.free(unsafe.Pointer(c.table1))
+	c.table1 = nil
+	C.free(unsafe.Pointer(c.table2))
+	c.table2 = nil
 }
 
 func (c *Collider) collideWorker(res chan []uint64, stop chan bool, progress chan uint64, wg *sync.WaitGroup) {
@@ -214,8 +226,8 @@ func (c *Collider) collideWorker(res chan []uint64, stop chan bool, progress cha
 	result := make([]C.uint64_t, 3)
 
 	for {
-		found := C.find_collisions(&c.table1[0], C.int(c.logTable1Size),
-			&c.table2[0], C.int(c.logTable2Size),
+		found := C.find_collisions(c.table1, C.int(c.logTable1Size),
+			c.table2, C.int(c.logTable2Size),
 			&c.locks[0],
 			C.int(c.header.Difficulty),
 			C.uint64_t(rand.Int63()),
@@ -281,7 +293,7 @@ func (c *Collider) collide() (nonces []uint64) {
 				now = time.Now()
 				delta := now.Sub(prev)
 				log.Printf("%d nonces, %.6f million hashes/sec",
-					count, float64(mod) / 1000000 / delta.Seconds())
+					count, float64(mod)/1000000/delta.Seconds())
 			}
 		}
 	}
