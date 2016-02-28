@@ -54,6 +54,10 @@ func main() {
 			mine(nil)
 		} else {
 			parent = mine(parent)
+			if parent == nil {
+				// exit on failure
+				return
+			}
 		}
 
 		select {
