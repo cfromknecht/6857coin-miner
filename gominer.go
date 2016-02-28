@@ -88,6 +88,7 @@ func mine(parent []byte) []byte {
 	blk.setRoot()
 
 	log.Println("parent ID", blk.Header.ParentId)
+	log.Println("difficulty", blk.Header.Difficulty)
 
 	col := newCollider(blk.Header)
 	defer col.cleanup()
