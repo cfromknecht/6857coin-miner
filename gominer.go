@@ -26,7 +26,8 @@ import (
 
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 var mainChain = flag.Bool("main", false, "mine the main chain")
-var genesisDifficulty = flag.Int("difficulty", 42, "difficulty for mining genesis block")
+var parentId = flag.String("parent", "169740d5c4711f3cbbde6b9bfbbe8b3d236879d849d1c137660fce9e7884cae7", "if root is false, start mining from this parent ID (default is the genesis block)")
+var genesisDifficulty = flag.Int("difficulty", 42, "difficulty for mining off the main chain")
 var maxTable = flag.Int("table", 28, "log base 2 of maximum table size")
 var timeOffset = flag.Int("offset", 2, "number of minutes to set timestamp forward by")
 var delay = flag.Int("delay", 15, "number of seconds to wait between blocks")
@@ -45,7 +46,7 @@ func main() {
 
 	var parent []byte
 	if !*mainChain {
-		parent, _ = hex.DecodeString("169740d5c4711f3cbbde6b9bfbbe8b3d236879d849d1c137660fce9e7884cae7")
+		parent, _ = hex.DecodeString(*parentId)
 	}
 	for i := 0; i < *maxMine; i++ {
 		timer := time.NewTimer(time.Duration(*delay) * time.Second)
