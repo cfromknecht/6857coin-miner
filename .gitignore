@@ -1,3 +1,5 @@
 gominer
+sha256_test
 *.prof
 *.sw[a-z]
+*.o
